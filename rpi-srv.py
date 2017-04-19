@@ -243,6 +243,50 @@ def find_mibvar(oid, mib):
     return mibvar
 
 ###
+### Find next accessible MIBVar object by OID
+### Return MIBVar object or None in the case of next OID not exist
+###
+def find_mibvar_next(oid, mib, oids):
+    
+    # Try to get MIBVar object by given OID
+    existed = mib.get(oid)
+    
+    # If MIBVar object with given OID exist then candidate object is its successor
+    if existed:
+        candidate = existed.get_successor()
+        
+    # If MIBVar object with given OID not existed ...
+    else:
+        
+        # If given OID is lesser than first OID in current list then candidate object is the first one
+        if cmp_oids(oid, oids[0]) < 0:
+            candidate = mib.get(oids[0])
+            
+        # If given OID is greater than last OID in current list then there are no objects next to the last one, return None
+        elif cmp_oids(oid, oids[-1]) > 0:
+            return None
+            
+        # Run binary search for finding candidate object
+        else:
+            p_low = 0
+            p_high = len(oids) - 1
+            p_delta = p_high - p_low
+            while p_delta > 1:
+                p_check = p_low + int(p_delta / 2)
+                if cmp_oids(oid, oids[p_check]) < 0:
+                    p_high = p_check
+                else:
+                    p_low = p_check
+                p_delta = p_high - p_low
+            candidate = mib.get(oids[p_high])
+            
+    # The first accessible OID in chain of successors starting from candidate is next OID
+    while candidate and candidate.get_max_access() < MIB_MAX_ACCESS_RO:
+        candidate = candidate.get_successor()
+        
+    return candidate
+
+###
 ### Channel record
 ###
 
