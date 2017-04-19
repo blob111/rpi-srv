@@ -229,10 +229,18 @@ def mib_init(ch_list):
 
     # Make sorted list of OIDs
     oids = sorted(mib.keys(), key=functools.cmp_to_key(cmp_oids))
-    
+
     # Fill in next OIDs
     for i, o in enumerate(oids[:-1]):
         mib[o].set_successor(oids[i + 1])
+
+###
+### Find MIBVar object by OID
+### Return MIBVar object or None in the case of OID not exist
+###
+def find_mibvar(oid, mib):
+    mibvar = mib.get(oid)
+    return mibvar
 
 ###
 ### Channel record
