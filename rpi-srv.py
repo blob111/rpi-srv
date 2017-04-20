@@ -13,6 +13,7 @@ import math
 import argparse
 import functools
 from gpiozero import MCP3008
+# import pdb
 
 SPI_PORT = 0
 SPI_DEVICE = 0
@@ -106,6 +107,10 @@ class MIBVar:
     # Return name
     def get_name(self):
         return self._name
+
+    # Return OID
+    def get_oid(self):
+        return self._oid
 
     # Return OID of next MIB variable
     def get_successor(self):
@@ -223,7 +228,7 @@ def mib_init(ch_list):
     mib['.1.5.0'] = MIBVar('snAdcChanNumber', '.1.5.0', handler=ch_list.num_of_channels, syntax=MIB_SYNTAX_INT)
     mib['.1.6'] = MIBVar('snAdcChanTable', '.1.6', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
     mib['.1.6.1'] = MIBVar('snAdcChanEntry', '.1.6.1', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
-    p = '1.6.1.'
+    p = '.1.6.1.'
     # Single channels block
     s = '.1.1.'
     for i in ch_list.sorted_ch_nums():
@@ -297,7 +302,7 @@ def find_mibvar_next(oid, mib, oids):
     while candidate and mib[candidate].get_max_access() < MIB_MAX_ACCESS_RO:
         candidate = mib[candidate].get_successor()
 
-    return mib[candidate]
+    return mib.get(candidate)
 
 ###
 ### Channel record
@@ -754,8 +759,10 @@ while True:
         # Data available on stdin if acting as SNMP agent
         elif snmp_agent and fd == stdin_fd and flags & select.EPOLLIN:
             lines = sys.stdin.readlines()
+            # pdb.set_trace()
             if not lines:
                 sys.stderr.write('ERROR: Catched event on stdin but no lines read\n')
+                continue
             first = lines.pop(0)
 
             # Handshake
@@ -774,7 +781,7 @@ while True:
                             sys.stdout.write('NONE\n')
                         else:
                             val = mibvar.get_value()
-                            if val:
+                            if val is not None:
                                 syn = mibvar.get_syntax()
                                 synname = MIB_SYNTAX_NAMES[syn]
                                 sys.stdout.write('{}\n{}\n{}\n'.format(oid, synname, str(val)))
@@ -795,7 +802,7 @@ while True:
                     mibvar = find_mibvar_next(oid, mib, oids)
                     if mibvar:
                         val = mibvar.get_value()
-                        if val:
+                        if val is not None:
                             oid = mibvar.get_oid()
                             syn = mibvar.get_syntax()
                             synname = MIB_SYNTAX_NAMES[syn]
