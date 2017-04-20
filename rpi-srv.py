@@ -44,6 +44,19 @@ MIB_SYNTAX_TT = 8      # TimeTicks
 MIB_SYNTAX_COUNT64 = 9 # Counter64
 MIB_SYNTAX_UINT = 10   # Unsigned32
 MIB_SYNTAX_SEQ = 11    # SEQUENCE
+MIB_SYNTAX_NAMES = {
+    MIB_SYNTAX_INT: 'integer',
+    MIB_SYNTAX_STRING: 'string',
+    MIB_SYNTAX_OID: 'objectid',
+    MIB_SYNTAX_BITS: 'integer',
+    MIB_SYNTAX_IP: 'ipaddress',
+    MIB_SYNTAX_COUNT: 'counter',
+    MIB_SYNTAX_GAUGE: 'gauge',
+    MIB_SYNTAX_TT: 'timeticks',
+    MIB_SYNTAX_COUNT64: 'counter',
+    MIB_SYNTAX_UINT: 'integer',
+    MIB_SYNTAX_SEQ: 'string'
+}
 
 VREF = 3324     # voltage reference fed into VREF (pin 15) of MCP3008, in mV
 R_PU = 9920     # pull-up resistor of voltage divider, in Ohms
@@ -207,7 +220,7 @@ def mib_init(ch_list):
     mib[o] = MIBVar('statsTsComplete', o, handler=ch_list.ts_complete, syntax=MIB_SYNTAX_TT, timeticks_conv=True)
 
     # Channels table
-    mib['.1.5.0'] = MIBVar('snAdcChanNumber', '.1.5.0', handler=lambda: ch_list.num_of_channels, syntax=MIB_SYNTAX_INT)
+    mib['.1.5.0'] = MIBVar('snAdcChanNumber', '.1.5.0', handler=ch_list.num_of_channels, syntax=MIB_SYNTAX_INT)
     mib['.1.6'] = MIBVar('snAdcChanTable', '.1.6', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
     mib['.1.6.1'] = MIBVar('snAdcChanEntry', '.1.6.1', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
     p = '1.6.1.'
@@ -247,25 +260,25 @@ def find_mibvar(oid, mib):
 ### Return MIBVar object or None in the case of next OID not exist
 ###
 def find_mibvar_next(oid, mib, oids):
-    
+
     # Try to get MIBVar object by given OID
     existed = mib.get(oid)
-    
+
     # If MIBVar object with given OID exist then candidate object is its successor
     if existed:
         candidate = existed.get_successor()
-        
+
     # If MIBVar object with given OID not existed ...
     else:
-        
+
         # If given OID is lesser than first OID in current list then candidate object is the first one
         if cmp_oids(oid, oids[0]) < 0:
             candidate = mib.get(oids[0])
-            
+
         # If given OID is greater than last OID in current list then there are no objects next to the last one, return None
         elif cmp_oids(oid, oids[-1]) > 0:
             return None
-            
+
         # Run binary search for finding candidate object
         else:
             p_low = 0
@@ -279,12 +292,12 @@ def find_mibvar_next(oid, mib, oids):
                     p_low = p_check
                 p_delta = p_high - p_low
             candidate = mib.get(oids[p_high])
-            
+
     # The first accessible OID in chain of successors starting from candidate is next OID
-    while candidate and candidate.get_max_access() < MIB_MAX_ACCESS_RO:
-        candidate = candidate.get_successor()
-        
-    return candidate
+    while candidate and mib[candidate].get_max_access() < MIB_MAX_ACCESS_RO:
+        candidate = mib[candidate].get_successor()
+
+    return mib[candidate]
 
 ###
 ### Channel record
@@ -502,7 +515,7 @@ def signal_handler(signal, frame):
 ### Cleanup
 ###
 def cleanup():
-    sys.stdout.write('INFO: Clean-up\n')
+    sys.stderr.write('INFO: Clean-up\n')
     signal.setitimer(signal.ITIMER_REAL, 0)
     ch_list.destroy()
     poller.close()
@@ -601,12 +614,24 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--server', '-s', help='name or address to bind to [single,optional]', default='')
 parser.add_argument('--port', '-p', help='port number [single,optional]', default=DEF_PORT)
 parser.add_argument('--minterval', '-m', help='measurement interval in seconds [single,optional]', type=int, default=DEF_MEASURE_INT)
+parser.add_argument('--snmp-agent', '-a', help='act as SNMP agent [single,optional]', action='store_true', default=False)
 parser.add_argument('--verbose', '-v', help='print extra messages [single,optional]', action='store_true', default=False)
 args = parser.parse_args()
 bind_address = args.server
 bind_port = args.port
 mival = args.minterval
+snmp_agent = args.snmp_agent
+if snmp_agent:
+    print_table = False
+else:
+    print_table = True
 verbose = args.verbose
+
+# We don't want to block while read from stdin if acting as ANMP agent
+if snmp_agent:
+    stdin_fd = sys.stdin.fileno()
+    flags = fcntl.fcntl(stdin_fd, fcntl.F_GETFL, 0)
+    fcntl.fcntl(stdin_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 # Check bind address
 if bind_address:
@@ -659,10 +684,12 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGHUP, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-# Create poller and register signal wakeup fd and socket fd
+# Create poller and register file descriptors
 poller = select.epoll()
 poller.register(pipe_r, select.EPOLLIN)
 poller.register(sock_fd, select.EPOLLIN)
+if snmp_agent:
+    poller.register(stdin_fd, select.EPOLLIN)
 
 # Calculate coefficient
 factor = VREF * (R_PU + R_PD) / R_PD
@@ -671,7 +698,7 @@ factor = VREF * (R_PU + R_PD) / R_PD
 retlast_hdr = struct.pack('>BBBB', PROTO_VER, PROTO_AUTHTYPE_NONE, PROTO_UNUSED, PROTO_CMD_RETLAST)
 
 # Initialize channel list
-sys.stdout.write('INFO: Initializing channels\n')
+sys.stderr.write('INFO: Initializing channels\n')
 ch_list = ChannelList(factor=factor)
 sorted_channels = sorted(channels_conf.keys())
 for ch in sorted_channels:
@@ -680,7 +707,8 @@ for ch in sorted_channels:
         sys.exit(1)
 
 # Initialize MIB objects and list of OIDs
-mib_init(ch_list)
+if snmp_agent:
+    mib_init(ch_list)
 
 # Set interval timer
 # Initial value of timer bounded to measurement interval
@@ -691,7 +719,7 @@ if t_rest < 0:
 signal.setitimer(signal.ITIMER_REAL, t_rest, mival)
 
 # Main loop
-sys.stdout.write('INFO: Entering main loop\n')
+sys.stderr.write('INFO: Entering main loop\n')
 while True:
 
     # Wait for events and process its
@@ -709,7 +737,7 @@ while True:
             # Process signals
             for signum in signums:
                 if signum == signal.SIGALRM:
-                    run_measure_circle(print_table=True)
+                    run_measure_circle(print_table)
                 elif signum == signal.SIGINT:
                     sys.stderr.write('\nSIGINT received\n')
                     cleanup()
@@ -722,6 +750,70 @@ while True:
                     sys.stderr.write('SIGHUP received\n')
                 else:
                     sys.stderr.write('ERROR: Unexpected signal received: {}\n'.format(signum))
+
+        # Data available on stdin if acting as SNMP agent
+        elif snmp_agent and fd == stdin_fd and flags & select.EPOLLIN:
+            lines = sys.stdin.readlines()
+            if not lines:
+                sys.stderr.write('ERROR: Catched event on stdin but no lines read\n')
+            first = lines.pop(0)
+
+            # Handshake
+            if first == 'PING\n':
+                sys.stdout.write('PONG\n')
+                sys.stderr.write('INFO: Passed PING/PONG handshake\n')
+
+            # GET request
+            elif first == 'get\n':
+                if lines:
+                    oid = lines.pop(0).rstrip('\n')
+                    mibvar = find_mibvar(oid, mib)
+                    if mibvar:
+                        if mibvar.get_max_access() < MIB_MAX_ACCESS_RO:
+                            sys.stderr.write('WARN: MIB variable with OID {} not accessible\n'.format(oid))
+                            sys.stdout.write('NONE\n')
+                        else:
+                            val = mibvar.get_value()
+                            if val:
+                                syn = mibvar.get_syntax()
+                                synname = MIB_SYNTAX_NAMES[syn]
+                                sys.stdout.write('{}\n{}\n{}\n'.format(oid, synname, str(val)))
+                            else:
+                                sys.stderr.write('WARN: Read of MIB variable with OID {} returned None\n'.format(oid))
+                                sys.stdout.write('NONE\n')
+                    else:
+                        sys.stderr.write('WARN: MIB variable with OID {} not existed\n'.format(oid))
+                        sys.stdout.write('NONE\n')
+                else:
+                    sys.stderr.write('WARN: Malformed GET request, no OID\n')
+                    sys.stdout.write('NONE\n')
+
+            # GETNEXT request
+            elif first == 'getnext\n':
+                if lines:
+                    oid = lines.pop(0).rstrip('\n')
+                    mibvar = find_mibvar_next(oid, mib, oids)
+                    if mibvar:
+                        val = mibvar.get_value()
+                        if val:
+                            oid = mibvar.get_oid()
+                            syn = mibvar.get_syntax()
+                            synname = MIB_SYNTAX_NAMES[syn]
+                            sys.stdout.write('{}\n{}\n{}\n'.format(oid, synname, str(val)))
+                        else:
+                            sys.stderr.write('WARN: Read of MIB variable with OID {} returned None\n'.format(oid))
+                            sys.stdout.write('NONE\n')
+                    else:
+                        sys.stderr.write('WARN: There is no accessible MIB variable next to OID {}\n'.format(oid))
+                        sys.stdout.write('NONE\n')
+                else:
+                    sys.stderr.write('WARN: Malformed GETNEXT request, no OID\n')
+                    sys.stdout.write('NONE\n')
+
+            # Unknown request
+            else:
+                sys.stderr.write('ERROR: Unrecognized request received on stdin\n')
+                sys.stdout.write('NONE\n')
 
         # Data available on socket
         elif fd == sock_fd and flags & select.EPOLLIN:
