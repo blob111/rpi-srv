@@ -28,24 +28,24 @@ PROTO_HDRSIZ = 4
 PROTO_CMD_GETLAST = 1
 PROTO_CMD_RETLAST = 2
 
-MIB_BASE = '1.3.6.1.3.999'
+MIB_BASE = '.1.3.6.1.3.999'
 MIB_DEVTYPE_MCP3008 = 1 # ADC device type of Analog Devices MCP3008
 MIB_MAX_ACCESS_NA = 0   # not-accessible
 MIB_MAX_ACCESS_AN = 1   # accessible-for-notify
 MIB_MAX_ACCESS_RO = 2   # read-only
 MIB_MAX_ACCESS_RW = 3   # read-write
 MIB_MAX_ACCESS_RC = 4   # read-create
-MIB_SYNTAX_INT = 1     # INTEGER (or Integer32)
-MIB_SYNTAX_STRING = 2  # OCTET STRING
-MIB_SYNTAX_OID = 3     # OBJECT IDENTIFIER
-MIB_SYNTAX_BITS = 4    # BITS construct
-MIB_SYNTAX_IP = 5      # IpAddress
-MIB_SYNTAX_COUNT = 6   # Counter32
-MIB_SYNTAX_GAUGE = 7   # Gauge32
-MIB_SYNTAX_TT = 8      # TimeTicks
-MIB_SYNTAX_COUNT64 = 9 # Counter64
-MIB_SYNTAX_UINT = 10   # Unsigned32
-MIB_SYNTAX_SEQ = 11    # SEQUENCE
+MIB_SYNTAX_INT = 1      # INTEGER (or Integer32)
+MIB_SYNTAX_STRING = 2   # OCTET STRING
+MIB_SYNTAX_OID = 3      # OBJECT IDENTIFIER
+MIB_SYNTAX_BITS = 4     # BITS construct
+MIB_SYNTAX_IP = 5       # IpAddress
+MIB_SYNTAX_COUNT = 6    # Counter32
+MIB_SYNTAX_GAUGE = 7    # Gauge32
+MIB_SYNTAX_TT = 8       # TimeTicks
+MIB_SYNTAX_COUNT64 = 9  # Counter64
+MIB_SYNTAX_UINT = 10    # Unsigned32
+MIB_SYNTAX_SEQ = 11     # SEQUENCE
 MIB_SYNTAX_NAMES = {
     MIB_SYNTAX_INT: 'integer',
     MIB_SYNTAX_STRING: 'string',
@@ -233,7 +233,7 @@ def mib_init(ch_list):
     # Single channels block
     s = '.1.1.'
     for i in ch_list.sorted_ch_nums():
-        ch_instance = ch_list.vec(ch)
+        ch_instance = ch_list.vec(i)
         s1 = s + str(i + 1)
         o = p + str(1) + s1
         mib[o] = MIBVar('chanNumber', o, handler=ch_instance.get_num, syntax=MIB_SYNTAX_INT)
@@ -254,10 +254,36 @@ def mib_init(ch_list):
         mib[o].set_successor(oids[i + 1])
 
 ###
+### Test full OID if it fits under MIB base
+### If so return stripped OID or None otherwise
+###
+def strip_full_oid(full_oid):
+
+    # Set default return value
+    ret = None
+
+    # Strip MIB base
+    if full_oid.find(MIB_BASE) == 0:
+        oid = full_oid[len(MIB_BASE):]
+
+        # Test for stripped OID is legal (empty or begins with dot)
+        if len(oid) == 0 or oid[0] == '.':
+            ret = oid
+
+    return ret
+
+###
 ### Find MIBVar object by OID
 ### Return MIBVar object or None in the case of OID not exist
 ###
-def find_mibvar(oid, mib):
+def find_mibvar(full_oid, mib):
+
+    # Strip MIB base
+    oid = strip_full_oid(full_oid)
+    if oid is None:
+        return None
+
+    # Get MIBVar object by OID, it'll be None if not existed
     mibvar = mib.get(oid)
     return mibvar
 
@@ -265,7 +291,12 @@ def find_mibvar(oid, mib):
 ### Find next accessible MIBVar object by OID
 ### Return MIBVar object or None in the case of next OID not exist
 ###
-def find_mibvar_next(oid, mib, oids):
+def find_mibvar_next(full_oid, mib, oids):
+
+    # Strip MIB base
+    oid = strip_full_oid(full_oid)
+    if oid is None:
+        return None
 
     # Try to get MIBVar object by given OID
     existed = mib.get(oid)
@@ -766,7 +797,6 @@ while True:
         # Data available on stdin if acting as SNMP agent
         elif snmp_agent and fd == stdin_fd and flags & select.EPOLLIN:
             lines = sys.stdin.readlines()
-            # pdb.set_trace()
             if not lines:
                 sys.stderr.write('ERROR: Catched event on stdin but no lines read\n')
                 continue
@@ -782,6 +812,7 @@ while True:
                 if lines:
                     oid = lines.pop(0).rstrip('\n')
                     mibvar = find_mibvar(oid, mib)
+                    # pdb.set_trace() ##### PDB TRACE POINT
                     if mibvar:
                         if mibvar.get_max_access() < MIB_MAX_ACCESS_RO:
                             sys.stderr.write('WARN: MIB variable with OID {} not accessible\n'.format(oid))
@@ -806,16 +837,16 @@ while True:
             elif first == 'getnext\n':
                 if lines:
                     oid = lines.pop(0).rstrip('\n')
-                    mibvar = find_mibvar_next(oid, mib, oids)
-                    if mibvar:
-                        val = mibvar.get_value()
-                        if val is not None:
-                            oid = mibvar.get_oid()
-                            syn = mibvar.get_syntax()
-                            synname = MIB_SYNTAX_NAMES[syn]
-                            sys.stdout.write('{}\n{}\n{}\n'.format(oid, synname, str(val)))
+                    mibvar_next = find_mibvar_next(oid, mib, oids)
+                    if mibvar_next:
+                        val_next = mibvar_next.get_value()
+                        if val_next is not None:
+                            oid_next = MIB_BASE + mibvar_next.get_oid()
+                            syn_next = mibvar_next.get_syntax()
+                            synname_next = MIB_SYNTAX_NAMES[syn_next]
+                            sys.stdout.write('{}\n{}\n{}\n'.format(oid_next, synname_next, str(val_next)))
                         else:
-                            sys.stderr.write('WARN: Read of MIB variable with OID {} returned None\n'.format(oid))
+                            sys.stderr.write('WARN: Read of MIB variable with OID {} returned None\n'.format(oid_next))
                             sys.stdout.write('NONE\n')
                     else:
                         sys.stderr.write('WARN: There is no accessible MIB variable next to OID {}\n'.format(oid))
