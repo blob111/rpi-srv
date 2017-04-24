@@ -11,7 +11,6 @@ import socket
 import struct
 import math
 import argparse
-import syslog
 import functools
 from gpiozero import MCP3008
 # import pdb
@@ -558,7 +557,6 @@ def cleanup():
     poller.close()
     os.close(pipe_r)
     os.close(pipe_w)
-    syslog.closelog()
     sock.close()
 
 ###
@@ -664,11 +662,6 @@ if snmp_agent:
 else:
     print_table = True
 verbose = args.verbose
-
-# Open logger
-syslog.openlog(logoption=syslog.LOG_PID, facility=syslog.LOG_USER)
-if not verbose:
-    syslog.setlogmask(LOG_UPTO(syslog.LOG_WARNING))
 
 # We don't want to block while read from stdin if acting as ANMP agent
 if snmp_agent:
