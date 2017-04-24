@@ -69,9 +69,10 @@ DEF_FACTOR = 1          # default scale factor for channel data
 MIN_AVG_SAMPLES = 1     # minimal number of number of samples
 MIN_AVG_DELTA = 0       # minimal delta between samples
 
-DEF_MEASURE_INT = 10            # default interval between measurements, in seconds
-MIVAL_SHIFT = .1                # constant time shift subtracted from calculated start time of measurement circle, in seconds
-TS_FORMAT = '%Y-%m-%d %H:%M:%S' # output date/time format
+DEF_MEASURE_INT = 10                    # default interval between measurements, in seconds
+MIVAL_SHIFT = .1                        # constant time shift subtracted from calculated start time of measurement circle, in seconds
+TS_FORMAT = '%Y-%m-%d %H:%M:%S'         # output date/time format
+DEBUG_TS_FORMAT = '%Y-%m-%d %H:%M:%S'   # output date/time format for debug output
 
 SIG_WAKEUP_FD_RLEN = 8  # length of data read from signal wakeup file descriptor
 
@@ -84,6 +85,17 @@ channels_conf = {   # MCP3008 channels list
 
 mib = {}
 oids = []
+
+###
+### Debug output
+###
+def dbg(message):
+    if debug:
+        caller = sys._getframe(1).f_code.co_name
+        ts = time.time()
+        ts_string = time.strftime(DEBUG_TS_FORMAT, time.localtime(ts))
+        ts_fraction = int(round(math.modf(ts)[0], 3) * 1000)
+        debug_fileobj.write('DEBUG: {}.{:03d}: {}: {}\n'.format(ts_string, ts_fraction, caller, message))
 
 ###
 ### MIB var record
@@ -551,12 +563,15 @@ def signal_handler(signal, frame):
 ### Cleanup
 ###
 def cleanup():
+    dbg('Clean-up called')
     sys.stderr.write('INFO: Clean-up\n')
     signal.setitimer(signal.ITIMER_REAL, 0)
     ch_list.destroy()
     poller.close()
     os.close(pipe_r)
     os.close(pipe_w)
+    if debug:
+        debug_fileobj.close()
     sock.close()
 
 ###
@@ -650,27 +665,45 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--server', '-s', help='name or address to bind to [single,optional]', default='')
 parser.add_argument('--port', '-p', help='port number [single,optional]', default=DEF_PORT)
 parser.add_argument('--minterval', '-m', help='measurement interval in seconds [single,optional]', type=int, default=DEF_MEASURE_INT)
-parser.add_argument('--snmp-agent', '-a', help='act as SNMP agent [single,optional]', action='store_true', default=False)
 parser.add_argument('--verbose', '-v', help='print extra messages [single,optional]', action='store_true', default=False)
+parser.add_argument('--snmp-agent', '-a', help='act as SNMP agent [single,optional]', action='store_true', default=False)
+parser.add_argument('--debug', '-d', help='debug output to file [single,optional]')
 args = parser.parse_args()
 bind_address = args.server
 bind_port = args.port
 mival = args.minterval
+verbose = args.verbose
+# SNMP agent
 snmp_agent = args.snmp_agent
 if snmp_agent:
     print_table = False
 else:
     print_table = True
-verbose = args.verbose
+# Debug
+if args.debug:
+    debug = True
+    debug_filename = args.debug
+    try:
+        debug_fileobj = open(debug_filename, mode='a')
+    except OSError as err:
+        sys.stderr.write('WARN: Error opening debug file "{}": {}\n'.format(debug_filename, err))
+        debug = False
+else:
+    debug = False
+dbg('Debug started')
+dbg('Arguments: bind_address={}, bind_port={}, mival={}, verbose={}, snmp_agent={}, print_table={}'.format(
+    bind_address, bind_port, mival, verbose, snmp_agent, print_table))
 
 # We don't want to block while read from stdin if acting as ANMP agent
 if snmp_agent:
+    dbg('Setting stdin to non-blocking')
     stdin_fd = sys.stdin.fileno()
     flags = fcntl.fcntl(stdin_fd, fcntl.F_GETFL, 0)
     fcntl.fcntl(stdin_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 # Check bind address
 if bind_address:
+    dbg('Getting IP address for "{}"'.format(bind_address))
     try:
         bind_address = socket.gethostbyname(bind_address)
     except OSError as err:
@@ -678,6 +711,7 @@ if bind_address:
         sys.exit(1)
 
 # Create a UDP/IP socket
+dbg('Opening non-blocking UDP/IP socket')
 try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
     sock_fd = sock.fileno()
@@ -686,6 +720,7 @@ except OSError as err:
     sys.exit(1)
 
 # Bind the socket to the port
+dbg('Binding socket fd={} to {}:{}'.format(sock_fd, bind_address, bind_port))
 try:
     sock.bind((bind_address, bind_port))
 except OSError as err:
@@ -707,20 +742,24 @@ out_pkts_failed = 0
 # Initialize signal file descriptor
 # We must set write end of pipe to non blocking mode
 # Also we don't want to block while read signal numbers from read end
+dbg('Creating pipe for catch signals and making its file descriptors non-blocking')
 pipe_r, pipe_w = os.pipe()
 flags = fcntl.fcntl(pipe_w, fcntl.F_GETFL, 0)
 fcntl.fcntl(pipe_w, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 signal.set_wakeup_fd(pipe_w)
 flags = fcntl.fcntl(pipe_r, fcntl.F_GETFL, 0)
 fcntl.fcntl(pipe_r, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+dbg('Pipe created, pipe_r={}, pipe_w={}'.format(pipe_r, pipe_w))
 
 # Redefine signal handlers
+dbg('Redefining signal handlers')
 signal.signal(signal.SIGALRM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGHUP, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 # Create poller and register file descriptors
+dbg('Creating poller and register file descriptors')
 poller = select.epoll()
 poller.register(pipe_r, select.EPOLLIN)
 poller.register(sock_fd, select.EPOLLIN)
@@ -734,6 +773,7 @@ factor = VREF * (R_PU + R_PD) / R_PD
 retlast_hdr = struct.pack('>BBBB', PROTO_VER, PROTO_AUTHTYPE_NONE, PROTO_UNUSED, PROTO_CMD_RETLAST)
 
 # Initialize channel list
+dbg('Start initializing channel list, {} channels in configuration'.format(len(channels_conf)))
 sys.stderr.write('INFO: Initializing channels\n')
 ch_list = ChannelList(factor=factor)
 sorted_channels = sorted(channels_conf.keys())
@@ -741,13 +781,17 @@ for ch in sorted_channels:
     if ch_list.add_ch(num=ch, label=channels_conf[ch]):
         sys.stderr.write('ERROR: Failed to add channel number {}, label {}\n'.format(ch, channels_conf[ch]))
         sys.exit(1)
+dbg('Channel list initialized, {} channels'.format(ch_list.num_of_channels()))
 
 # Initialize MIB objects and list of OIDs
 if snmp_agent:
+    dbg('Start initializing MIB, base={}'.format(MIB_BASE))
     mib_init(ch_list)
+    dbg('MIB initialized, {} variables'.format(len(mib)))
 
 # Set interval timer
 # Initial value of timer bounded to measurement interval
+dbg('Setting interval timer, {} s'.format(mival))
 t = time.time()
 t_rest = mival - t % mival - MIVAL_SHIFT
 if t_rest < 0:
@@ -755,15 +799,19 @@ if t_rest < 0:
 signal.setitimer(signal.ITIMER_REAL, t_rest, mival)
 
 # Main loop
+dbg('Starting main loop')
 sys.stderr.write('INFO: Entering main loop\n')
 while True:
 
     # Wait for events and process its
     try:
+        dbg('Calling poller')
         events = poller.poll()
+        dbg('Poller returned {} events'.format(len(events)))
     except InterruptedError:
         continue
     for fd, flags in events:
+        dbg('Start processing event, fd={}, flags={}'.format(fd, flags))
 
         # Signal received, extract signal numbers from wakeup fd
         if fd == pipe_r and flags & select.EPOLLIN:
