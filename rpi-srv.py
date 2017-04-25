@@ -96,6 +96,7 @@ def dbg(message):
         ts_string = time.strftime(DEBUG_TS_FORMAT, time.localtime(ts))
         ts_fraction = int(round(math.modf(ts)[0], 3) * 1000)
         debug_fileobj.write('DEBUG: {}.{:03d}: {}: {}\n'.format(ts_string, ts_fraction, caller, message))
+        debug_fileobj.flush()
 
 ###
 ### MIB var record
@@ -557,6 +558,7 @@ class ChannelList:
 ### Signal handler
 ###
 def signal_handler(signal, frame):
+    dbg('Signal caught: ' + str(signal))
     return
 
 ###
@@ -815,29 +817,38 @@ while True:
 
         # Signal received, extract signal numbers from wakeup fd
         if fd == pipe_r and flags & select.EPOLLIN:
+            dbg('Signal received from wakeup fd, unpacking signal numbers')
             data = os.read(pipe_r, SIG_WAKEUP_FD_RLEN)
             signums = struct.unpack('{}B'.format(len(data)), data)
+            dbg('Signal numbers unpacked: {}'.format(signums))
 
             # Process signals
             for signum in signums:
                 if signum == signal.SIGALRM:
+                    dbg('Got SIGALRM, running measure circle')
                     run_measure_circle(print_table)
                 elif signum == signal.SIGINT:
+                    dbg('Got SIGINT, terminating')
                     sys.stderr.write('\nSIGINT received\n')
                     cleanup()
                     sys.exit(0)
                 elif signum == signal.SIGTERM:
+                    dbg('Got SIGTERM, terminating')
                     sys.stderr.write('\nSIGTERM received\n')
                     cleanup()
                     sys.exit(0)
                 elif signum == signal.SIGHUP:
+                    dbg('Got SIGHUP, ignoring')
                     sys.stderr.write('SIGHUP received\n')
                 else:
+                    dbg('Got uncaught signal {}, ignoring'.format(signum))
                     sys.stderr.write('ERROR: Unexpected signal received: {}\n'.format(signum))
 
         # Data available on stdin if acting as SNMP agent
         elif snmp_agent and fd == stdin_fd and flags & select.EPOLLIN:
+            dbg('Data available on stdin, reading')
             lines = sys.stdin.readlines()
+            dbg('Read {} lines from stdin: {}'.format(len(lines), repr(''.join(lines))))
             if not lines:
                 sys.stderr.write('ERROR: Catched event on stdin but no lines read\n')
                 continue
@@ -845,67 +856,102 @@ while True:
 
             # Handshake
             if first == 'PING\n':
+                dbg('Got PING request, sending PONG reply')
                 sys.stdout.write('PONG\n')
+                sys.stdout.flush()
                 sys.stderr.write('INFO: Passed PING/PONG handshake\n')
 
             # GET request
             elif first == 'get\n':
+                dbg('Start processing GET request')
                 if lines:
                     oid = lines.pop(0).rstrip('\n')
+                    dbg('GET: Extracted OID: {}'.format(oid))
                     mibvar = find_mibvar(oid, mib)
                     # pdb.set_trace() ##### PDB TRACE POINT
                     if mibvar:
+                        dbg('GET: Found MIBVar object')
                         if mibvar.get_max_access() < MIB_MAX_ACCESS_RO:
+                            dbg('GET: MIBVar not accessible'.format(oid))
                             sys.stderr.write('WARN: MIB variable with OID {} not accessible\n'.format(oid))
                             sys.stdout.write('NONE\n')
+                            sys.stdout.flush()
                         else:
+                            dbg('GET: MIBVar accessible, trying to get value')
                             val = mibvar.get_value()
                             if val is not None:
+                                dbg('GET: Got value of MIBVar, constructing reply')
                                 syn = mibvar.get_syntax()
                                 synname = MIB_SYNTAX_NAMES[syn]
-                                sys.stdout.write('{}\n{}\n{}\n'.format(oid, synname, str(val)))
+                                reply = '{}\n{}\n{}\n'.format(oid, synname, str(val))
+                                dbg('GET: Sending reply to stdout: {}'.format(repr(reply)))
+                                sys.stdout.write(reply)
+                                sys.stdout.flush()
                             else:
+                                dbg('GET: Read of MIBVar failed')
                                 sys.stderr.write('WARN: Read of MIB variable with OID {} returned None\n'.format(oid))
                                 sys.stdout.write('NONE\n')
+                                sys.stdout.flush()
                     else:
+                        dbg('GET: MIBVar object not found')
                         sys.stderr.write('WARN: MIB variable with OID {} not existed\n'.format(oid))
                         sys.stdout.write('NONE\n')
+                        sys.stdout.flush()
                 else:
+                    dbg('Malformed GET request')
                     sys.stderr.write('WARN: Malformed GET request, no OID\n')
                     sys.stdout.write('NONE\n')
+                    sys.stdout.flush()
 
             # GETNEXT request
             elif first == 'getnext\n':
+                dbg('Start processing GETNEXT request')
                 if lines:
                     oid = lines.pop(0).rstrip('\n')
+                    dbg('GETNEXT: Extracted OID: {}'.format(oid))
                     mibvar_next = find_mibvar_next(oid, mib, oids)
                     if mibvar_next:
+                        dbg('GETNEXT: Found next MIBVar object, trying to get value')
                         val_next = mibvar_next.get_value()
                         if val_next is not None:
+                            dbg('GETNEXT: Got value of next MIBVar, constructing reply')
                             oid_next = MIB_BASE + mibvar_next.get_oid()
                             syn_next = mibvar_next.get_syntax()
                             synname_next = MIB_SYNTAX_NAMES[syn_next]
-                            sys.stdout.write('{}\n{}\n{}\n'.format(oid_next, synname_next, str(val_next)))
+                            reply = '{}\n{}\n{}\n'.format(oid_next, synname_next, str(val_next))
+                            dbg('GETNEXT: Sending reply to stdout: {}'.format(repr(reply)))
+                            sys.stdout.write(reply)
+                            sys.stdout.flush()
                         else:
+                            dbg('GETNEXT: Read of next MIBVar failed')
                             sys.stderr.write('WARN: Read of MIB variable with OID {} returned None\n'.format(oid_next))
                             sys.stdout.write('NONE\n')
+                            sys.stdout.flush()
                     else:
+                        dbg('GETNEXT: next MIBVar object not found')
                         sys.stderr.write('WARN: There is no accessible MIB variable next to OID {}\n'.format(oid))
                         sys.stdout.write('NONE\n')
+                        sys.stdout.flush()
                 else:
+                    dbg('Malformed GETNEXT request')
                     sys.stderr.write('WARN: Malformed GETNEXT request, no OID\n')
                     sys.stdout.write('NONE\n')
+                    sys.stdout.flush()
 
             # Unknown request
             else:
+                dbg('Unrecognized request received on stdin')
                 sys.stderr.write('ERROR: Unrecognized request received on stdin\n')
                 sys.stdout.write('NONE\n')
+                sys.stdout.flush()
 
         # Data available on socket
         elif fd == sock_fd and flags & select.EPOLLIN:
+            dbg('Data available on socket, trying to read')
             try:
                 data, client_address = sock.recvfrom(RECV_BUFSIZ)
             except OSError as err:
+                dbg('Error receiving from socket "{}:{}": {0}'.format(bind_address, bind_port, err))
                 sys.stderr.write('Error receiving from socket "{}:{}": {0}\n'.format(bind_address, bind_port, err))
                 cleanup()
                 sys.exit(1)
