@@ -85,6 +85,7 @@ channels_conf = {   # MCP3008 channels list
 
 mib = {}
 oids = []
+pid = 0
 
 ###
 ### Debug output
@@ -95,7 +96,7 @@ def dbg(message):
         ts = time.time()
         ts_string = time.strftime(DEBUG_TS_FORMAT, time.localtime(ts))
         ts_fraction = int(round(math.modf(ts)[0], 3) * 1000)
-        debug_fileobj.write('DEBUG: {}.{:03d}: {}: {}\n'.format(ts_string, ts_fraction, caller, message))
+        debug_fileobj.write('DEBUG[{}]: {}.{:03d}: {}: {}\n'.format(pid, ts_string, ts_fraction, caller, message))
         debug_fileobj.flush()
 
 ###
@@ -367,7 +368,9 @@ class Channel:
         self._last = None       # last calculated average value
         self._ts = None         # timestamp of last calculation
 
+        dbg('Calling MCP3008 class constructor for channel {}, port {} device {}'.format(self._num, SPI_PORT, SPI_DEVICE))
         self._adc = MCP3008(channel=self._num, port=SPI_PORT, device=SPI_DEVICE)
+        dbg('MCP3008 object created for channel {}'.format(self._num))
 
     # Reset accumulator
     def reset_acc(self):
@@ -449,6 +452,7 @@ class ChannelList:
 
     # Add channel to list
     def add_ch(self, num=None, label=''):
+        dbg('Start adding channel {} with label {}'.format(num, label))
         if type(num).__name__ == 'int' and num in range(0, 8) and num not in self._vec.keys():
             self._vec[num] = Channel(num=num, label=label)
             self._sorted_ch_nums = sorted(self._vec.keys())
@@ -459,6 +463,7 @@ class ChannelList:
 
     # Remove channel from list
     def rem_ch(self, num=None):
+        dbg('Start removing channel {}'.format(num))
         if type(num).__name__ == 'int' and num in self._vec.keys():
             self._vec[num].destroy()
             del self._vec[num]
@@ -662,7 +667,10 @@ def process_message(data, client_address):
 ### Main program starts here
 ###
 
-### Parse arguments
+# Get PID
+pid = os.getpid()
+
+# Parse arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--server', '-s', help='name or address to bind to [single,optional]', default='')
 parser.add_argument('--port', '-p', help='port number [single,optional]', default=DEF_PORT)
@@ -775,11 +783,15 @@ factor = VREF * (R_PU + R_PD) / R_PD
 retlast_hdr = struct.pack('>BBBB', PROTO_VER, PROTO_AUTHTYPE_NONE, PROTO_UNUSED, PROTO_CMD_RETLAST)
 
 # Initialize channel list
+debug_sleep_0 = 15
+dbg('Sleeping {} seconds'.format(debug_sleep_0))
+time.sleep(debug_sleep_0)
 dbg('Start initializing channel list, {} channels in configuration'.format(len(channels_conf)))
-sys.stderr.write('INFO: Initializing channels\n')
+#sys.stderr.write('INFO: Initializing channels\n')
 ch_list = ChannelList(factor=factor)
 sorted_channels = sorted(channels_conf.keys())
 for ch in sorted_channels:
+    dbg('Start initializing channel {}'.format(ch))
     if ch_list.add_ch(num=ch, label=channels_conf[ch]):
         sys.stderr.write('ERROR: Failed to add channel number {}, label {}\n'.format(ch, channels_conf[ch]))
         sys.exit(1)
@@ -958,10 +970,12 @@ while True:
 
             # Process message
             if data:
+                dbg('Read {} bytes of data from {}:{}'.formta(len(data), client_address[0], client_address[1]))
                 process_message(data, client_address)
 
         # Unexpected event
         else:
+            dbg('Unexpected event on fd {}, flags {}'.format(fd, flags))
             sys.stderr.write('ERROR: Unexpected event on fd {}, flags {}\n'.format(fd, flags))
 
 # This point should be never reached
