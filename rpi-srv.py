@@ -86,6 +86,7 @@ channels_conf = {   # MCP3008 channels list
 mib = {}
 oids = []
 pid = 0
+ts_base = float(0)
 
 ###
 ### Debug output
@@ -144,8 +145,11 @@ class MIBVar:
             return None
         else:
             val = self._handler()
-            if self._syntax == MIB_SYNTAX_TT and self._timeticks_conv:
-                val = round(val * 100)
+            if val is not None:
+                if self._syntax == MIB_SYNTAX_TT and self._timeticks_conv and type(val).__name__ == 'float':
+                    val = round((val - ts_base) * 100)
+                elif type(val).__name__ == 'bool':
+                    val = int(val)
             return val
 
     # Set OID of next MIB variable
@@ -228,7 +232,7 @@ def mib_init(ch_list):
     mib['.1.3.0'] = MIBVar('snAdcStatsNumber', '.1.3.0', handler=lambda: 1, syntax=MIB_SYNTAX_INT)
     mib['.1.4'] = MIBVar('snAdcStatsTable', '.1.4', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
     mib['.1.4.1'] = MIBVar('snAdcStatsEntry', '.1.4.1', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
-    p = '1.4.1.'
+    p = '.1.4.1.'
     # Single statistics block
     s = '.1'
     o = p + str(1) + s
@@ -703,9 +707,33 @@ else:
 dbg('Debug started')
 dbg('Arguments: bind_address={}, bind_port={}, mival={}, verbose={}, snmp_agent={}, print_table={}'.format(
     bind_address, bind_port, mival, verbose, snmp_agent, print_table))
+dbg('RUID: {}, EUID: {}, SUID: {}, RGID: {}, EGID:{}, SGID: {}'.format(*(os.getresuid() + os.getresgid())))
+dbg('Group IDs: {}'.format(repr(os.getgroups())))
 
-# We don't want to block while read from stdin if acting as ANMP agent
+# Save base time
+ts_base = time.time()
+dbg('Saved base timestamp: {}'.format(ts_base))
+
+# We should pass handshake quickly
+# We don't want to block while read from stdin if acting as SNMP agent
 if snmp_agent:
+    # Handshake
+    try:
+        dbg('Waiting handshake')
+        line = sys.stdin.readline()
+        dbg('Read line from stdin: {}'.format(repr(line)))
+    except OSError as err:
+        sys.stderr.write('Error reading stdin: {}\n'.format(err))
+        sys.exit(1)
+    if line == 'PING\n':
+        dbg('Got PING request, sending PONG reply')
+        sys.stdout.write('PONG\n')
+        sys.stdout.flush()
+        sys.stderr.write('INFO: Passed PING/PONG handshake\n')
+    else:
+        sys.stderr.write('Unrecognized handshake received\n'.format(err))
+        sys.exit(1)
+    # Unblock stdin
     dbg('Setting stdin to non-blocking')
     stdin_fd = sys.stdin.fileno()
     flags = fcntl.fcntl(stdin_fd, fcntl.F_GETFL, 0)
@@ -783,11 +811,8 @@ factor = VREF * (R_PU + R_PD) / R_PD
 retlast_hdr = struct.pack('>BBBB', PROTO_VER, PROTO_AUTHTYPE_NONE, PROTO_UNUSED, PROTO_CMD_RETLAST)
 
 # Initialize channel list
-debug_sleep_0 = 15
-dbg('Sleeping {} seconds'.format(debug_sleep_0))
-time.sleep(debug_sleep_0)
 dbg('Start initializing channel list, {} channels in configuration'.format(len(channels_conf)))
-#sys.stderr.write('INFO: Initializing channels\n')
+sys.stderr.write('INFO: Initializing channels\n')
 ch_list = ChannelList(factor=factor)
 sorted_channels = sorted(channels_conf.keys())
 for ch in sorted_channels:
