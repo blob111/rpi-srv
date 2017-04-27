@@ -94,9 +94,9 @@ ts_base = float(0)
 def dbg(message):
     if debug:
         caller = sys._getframe(1).f_code.co_name
-        ts = time.time()
+        ts = round(time.time(), 3)
         ts_string = time.strftime(DEBUG_TS_FORMAT, time.localtime(ts))
-        ts_fraction = int(round(math.modf(ts)[0], 3) * 1000)
+        ts_fraction = int(math.modf(ts)[0] * 1000)
         debug_fileobj.write('DEBUG[{}]: {}.{:03d}: {}: {}\n'.format(pid, ts_string, ts_fraction, caller, message))
         debug_fileobj.flush()
 
@@ -598,8 +598,9 @@ def run_measure_circle(print_table=False):
     elif print_table:
         valid, ts_start, ts_complete, last_values = ch_list.last()
         if valid:
+            ts_complete = round(ts_complete, 6)
             ts_string = time.strftime(TS_FORMAT, time.localtime(ts_complete))
-            ts_fraction = int(round(math.modf(ts_complete)[0], 6) * 1000000)
+            ts_fraction = int(math.modf(ts_complete)[0] * 1000000)
             ts_diff = round((ts_complete - ts_start) * 1000000)
             sys.stdout.write('{}.{:06d}, {:7d} us, '.format(ts_string, ts_fraction, ts_diff))
             for ch in sorted_channels:
