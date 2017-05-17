@@ -13,7 +13,17 @@ import math
 import argparse
 import functools
 from gpiozero import MCP3008
-# import pdb
+
+###
+### Python debug
+###
+### If debug is needed you should uncomment the next line
+#import pdb
+### and place pdb.set_trace() call before the line you want stop execution
+
+###
+### Global constants and variables
+###
 
 SPI_PORT = 0
 SPI_DEVICE = 0
@@ -320,7 +330,8 @@ def find_mibvar_next(full_oid, mib, oids):
 
     # If MIBVar object with given OID exist then candidate object is its successor
     if existed:
-        candidate = existed.get_successor()
+        candidate_oid = existed.get_successor()
+        candidate = mib.get(candidate_oid)
 
     # If MIBVar object with given OID not existed ...
     else:
@@ -348,10 +359,10 @@ def find_mibvar_next(full_oid, mib, oids):
             candidate = mib.get(oids[p_high])
 
     # The first accessible OID in chain of successors starting from candidate is next OID
-    while candidate and mib[candidate].get_max_access() < MIB_MAX_ACCESS_RO:
-        candidate = mib[candidate].get_successor()
+    while candidate and candidate.get_max_access() < MIB_MAX_ACCESS_RO:
+        candidate = candidate.get_successor()
 
-    return mib.get(candidate)
+    return candidate
 
 ###
 ### Channel record
@@ -906,7 +917,6 @@ while True:
                     oid = lines.pop(0).rstrip('\n')
                     dbg('GET: Extracted OID: {}'.format(oid))
                     mibvar = find_mibvar(oid, mib)
-                    # pdb.set_trace() ##### PDB TRACE POINT
                     if mibvar:
                         dbg('GET: Found MIBVar object')
                         if mibvar.get_max_access() < MIB_MAX_ACCESS_RO:
