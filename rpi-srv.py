@@ -37,6 +37,9 @@ PROTO_HDRSIZ = 4
 PROTO_CMD_GETLAST = 1
 PROTO_CMD_RETLAST = 2
 
+SYSFPARAM_RPI_PROC_TEMP_KEY = 0
+SYSFPARAM_RPI_PROC_TEMP_FNAME = '/sys/class/thermal/thermal_zone0/temp'
+
 MIB_BASE = '.1.3.6.1.3.999'
 MIB_DEVTYPE_MCP3008 = 1 # ADC device type of Analog Devices MCP3008
 MIB_MAX_ACCESS_NA = 0   # not-accessible
@@ -95,6 +98,7 @@ channels_conf = {   # MCP3008 channels list
 
 mib = {}
 oids = []
+sysfparams = {}
 pid = 0
 ts_base = float(0)
 
@@ -217,7 +221,7 @@ def mib_init(ch_list):
     # Base tree
     mib[''] = MIBVar('snGroup', '', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
 
-    # ADC tree
+    # ADC subtree
     mib['.1'] = MIBVar('snAdc', '.1', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
 
     # Devices table
@@ -272,6 +276,13 @@ def mib_init(ch_list):
         mib[o] = MIBVar('chanLast', o, handler=ch_instance.get_last, syntax=MIB_SYNTAX_GAUGE)
         o = p + str(5) + s1
         mib[o] = MIBVar('chanTs', o, handler=ch_instance.get_ts, syntax=MIB_SYNTAX_TT, timeticks_conv=True)
+        
+    # Raspberry Pi subtree
+    mib['.2'] = MIBVar('snRPi', '.2', max_access=MIB_MAX_ACCESS_NA, syntax=MIB_SYNTAX_OID)
+    
+    # Raspberry Pi processor temperature
+    mib['.2.1.0'] = MIBVar('snRPiTemperature', '.2.1.0', handler=sysfparams[SYSFPARAM_RPI_PROC_TEMP_KEY].read,
+        syntax=MIB_SYNTAX_GAUGE)
 
     # Make sorted list of OIDs
     oids = sorted(mib.keys(), key=functools.cmp_to_key(cmp_oids))
@@ -575,6 +586,54 @@ class ChannelList:
             self.rem_ch(num=ch)
 
 ###
+### System parameter record (parameter value read from file)
+###
+
+class SysFParam:
+
+    # Constructor
+    def __init__(self, fname=None, ptype='str'):
+
+        # Class variables
+        self._fname = fname     # path to file
+        self._f = None          # file object
+        self._opened = False    # opened flag
+        self._ptype = ptype     # parameter type, default: 'str'
+        
+    def open(self):
+        if self._fname and not self._opened:
+            try:
+                self._f = open(self._fname, 'r')
+                self._opened = True
+            except OSError as err:
+                sys.stderr.write('WARN: Error opening file "{}": {}\n'.format(self._fname, err))
+                
+    def read(self):
+        ret = None
+        if self._opened:
+            try:
+                self._f.seek(0)
+                line = self._f.readline()
+                if line:
+                    line = line.rstrip('\n')
+                    if self._ptype == 'int':
+                        try:
+                            ret = int(line)
+                        except (TypeError, ValueError):
+                            ret = 0
+                    else:
+                        ret = line
+            except OSError as err:
+                sys.stderr.write('WARN: Error reading file "{}": {}\n'.format(self._fname, err))
+
+        return ret
+        
+    def destroy(self):
+        if self._opened:
+            self._f.close()
+            self._opened = False
+
+###
 ### Signal handler
 ###
 def signal_handler(signal, frame):
@@ -588,6 +647,8 @@ def cleanup():
     dbg('Clean-up called')
     sys.stderr.write('INFO: Clean-up\n')
     signal.setitimer(signal.ITIMER_REAL, 0)
+    for v in sysfparams.values():
+        v.destroy()
     ch_list.destroy()
     poller.close()
     os.close(pipe_r)
@@ -689,7 +750,7 @@ pid = os.getpid()
 # Parse arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--server', '-s', help='name or address to bind to [single,optional]', default='')
-parser.add_argument('--port', '-p', help='port number [single,optional]', default=DEF_PORT)
+parser.add_argument('--port', '-p', help='port number [single,optional]', type=int, default=DEF_PORT)
 parser.add_argument('--minterval', '-m', help='measurement interval in seconds [single,optional]', type=int, default=DEF_MEASURE_INT)
 parser.add_argument('--verbose', '-v', help='print extra messages [single,optional]', action='store_true', default=False)
 parser.add_argument('--snmp-agent', '-a', help='act as SNMP agent [single,optional]', action='store_true', default=False)
@@ -833,6 +894,11 @@ for ch in sorted_channels:
         sys.stderr.write('ERROR: Failed to add channel number {}, label {}\n'.format(ch, channels_conf[ch]))
         sys.exit(1)
 dbg('Channel list initialized, {} channels'.format(ch_list.num_of_channels()))
+
+# Initialize system parameter instances
+dbg('Start initializing system parameter instances')
+sysfparams[SYSFPARAM_RPI_PROC_TEMP_KEY] = SysFParam(fname=SYSFPARAM_RPI_PROC_TEMP_FNAME, ptype='int')
+sysfparams[SYSFPARAM_RPI_PROC_TEMP_KEY].open()
 
 # Initialize MIB objects and list of OIDs
 if snmp_agent:
