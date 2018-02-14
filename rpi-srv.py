@@ -72,15 +72,15 @@ MIB_SYNTAX_NAMES = {
     MIB_SYNTAX_SEQ: 'string'
 }
 
-VREF = 3324     # voltage reference fed into VREF (pin 15) of MCP3008, in mV
+VREF = 4096     # voltage reference fed into VREF (pin 15) of MCP3008, in mV
 R_PU = 9920     # pull-up resistor of voltage divider, in Ohms
 R_PD = 9930     # pull-down resistor of voltage divider, in Ohms
 
-DEF_AVG_SAMPLES = 5     # default number of samples taken out of each channel
-DEF_AVG_DELTA = .001    # default delta between samples, in seconds
-DEF_FACTOR = 1          # default scale factor for channel data
-MIN_AVG_SAMPLES = 1     # minimal number of number of samples
-MIN_AVG_DELTA = 0       # minimal delta between samples
+DEF_AVG_SAMPLES = 5         # default number of samples taken out of each channel
+DEF_AVG_DELTA = .001        # default delta between samples, in seconds
+DEF_FACTOR = lambda x: x    # default scale factor for channel data
+MIN_AVG_SAMPLES = 1         # minimal number of number of samples
+MIN_AVG_DELTA = 0           # minimal delta between samples
 
 DEF_MEASURE_INT = 10                    # default interval between measurements, in seconds
 MIVAL_SHIFT = .1                        # constant time shift subtracted from calculated start time of measurement circle, in seconds
@@ -89,11 +89,12 @@ DEBUG_TS_FORMAT = '%Y-%m-%d %H:%M:%S'   # output date/time format for debug outp
 
 SIG_WAKEUP_FD_RLEN = 8  # length of data read from signal wakeup file descriptor
 
-channels_conf = {   # MCP3008 channels list
-    0: 'MAIN',
-    1: 'REG',
-    2: 'BAT',
-    3: '+5V'
+channels_conf = {   # MCP3008 channels dict {number: [name, factor_function]}
+    0: ['MAIN', lambda x: x * VREF * (R_PU + R_PD) / R_PD],
+    1: ['REG', lambda x: x * VREF * (R_PU + R_PD) / R_PD],
+    2: ['BAT', lambda x: x * VREF * (R_PU + R_PD) / R_PD],
+    3: ['+5V', lambda x: x * VREF * (R_PU + R_PD) / R_PD],
+    7: ['TEMP', lambda x: (x * VREF - 750) * 100 + 25000]
 }
 
 mib = {}
@@ -263,8 +264,8 @@ def mib_init(ch_list):
     p = '.1.6.1.'
     # Single channels block
     s = '.1.1.'
-    for i in ch_list.sorted_ch_nums():
-        ch_instance = ch_list.vec(i)
+    for i, c in enumerate(ch_list.sorted_ch_nums()):
+        ch_instance = ch_list.vec(c)
         s1 = s + str(i + 1)
         o = p + str(1) + s1
         mib[o] = MIBVar('chanNumber', o, handler=ch_instance.get_num, syntax=MIB_SYNTAX_INT)
@@ -371,7 +372,8 @@ def find_mibvar_next(full_oid, mib, oids):
 
     # The first accessible OID in chain of successors starting from candidate is next OID
     while candidate and candidate.get_max_access() < MIB_MAX_ACCESS_RO:
-        candidate = candidate.get_successor()
+        candidate_oid = candidate.get_successor()
+        candidate = mib.get(candidate_oid)
 
     return candidate
 
@@ -382,11 +384,12 @@ def find_mibvar_next(full_oid, mib, oids):
 class Channel:
 
     # Constructor
-    def __init__(self, num=None, label=''):
+    def __init__(self, num, label='', factor=DEF_FACTOR):
 
         # Class variables
         self._num = num         # channel number on MCP3008
         self._label = label     # symbolic channel name
+        self._factor = factor   # scaling function
         self._adc = None        # instance of MCP3008 class
         self._acc = 0           # accumulator for consecutive measurements
         self._samples = 0       # current number of samples in one measurement circle
@@ -409,9 +412,9 @@ class Channel:
         self._samples += 1
 
     # Calculate average of accumulator and store it
-    def avg_acc(self, factor=1):
+    def avg_acc(self):
         self._valid = False
-        self._last = round(self._acc * factor / self._samples)
+        self._last = round(self._factor(self._acc / self._samples))
         self._ts = time.time()
         self._valid = True
 
@@ -450,37 +453,34 @@ class Channel:
 class ChannelList:
 
     # Constructor
-    def __init__(self, samples=DEF_AVG_SAMPLES, delta=DEF_AVG_DELTA, factor=DEF_FACTOR):
+    def __init__(self, samples=DEF_AVG_SAMPLES, delta=DEF_AVG_DELTA):
 
         # Class variables
         self._vec = {}                  # instances of Channel class
         self._sorted_ch_nums = []       # sorted list of channel numbers
         self._samples = DEF_AVG_SAMPLES # number of samples in one measurement circle
         self._delta = DEF_AVG_DELTA     # interval between consecutive measurements in one circle
-        self._factor = DEF_FACTOR       # coefficient
         self._valid = False             # valid flag
         self._ts_start = None           # timestamp of starting of last measurement circle
         self._ts_complete = None        # timestamp of completing of last measurement circle
         self._lock = None               # locked when measurement circle runs
         self._last_values = {}          # last values
 
-        self.set_parms(samples=samples, delta=delta, factor=factor)
+        self.set_parms(samples=samples, delta=delta)
         self._lock = threading.Lock()
 
     # Check and set parameters
-    def set_parms(self, samples=None, delta=None, factor=None):
+    def set_parms(self, samples=None, delta=None):
         if samples and type(samples).__name__ == 'int' and samples > MIN_AVG_SAMPLES:
             self._samples = samples
         if delta and (type(delta).__name__ in ['int', 'float']) and delta > MIN_AVG_DELTA:
             self._delta = delta
-        if factor and (type(factor).__name__ in ['int', 'float']):
-            self._factor = factor
 
     # Add channel to list
-    def add_ch(self, num=None, label=''):
+    def add_ch(self, num, label, factor=DEF_FACTOR):
         dbg('Start adding channel {} with label {}'.format(num, label))
         if type(num).__name__ == 'int' and num in range(0, 8) and num not in self._vec.keys():
-            self._vec[num] = Channel(num=num, label=label)
+            self._vec[num] = Channel(num, label=label, factor=factor)
             self._sorted_ch_nums = sorted(self._vec.keys())
             self._last_values[num] = self._vec[num].get_lastprop()
             return 0
@@ -512,7 +512,7 @@ class ChannelList:
     # Calculate average value for all channels and load its
     def average(self):
         for ch in self._sorted_ch_nums:
-            self._vec[ch].avg_acc(factor=self._factor)
+            self._vec[ch].avg_acc()
             self._last_values[ch] = self._vec[ch].get_lastprop()
 
     # Measure circle
@@ -678,9 +678,9 @@ def run_measure_circle(print_table=False):
             for ch in sorted_channels:
                 valid, last, ts = last_values[ch]
                 if valid:
-                    sys.stdout.write('{}: {:+.2f}, '.format(channels_conf[ch], last/1000))
+                    sys.stdout.write('{}: {:+.2f}, '.format(channels_conf[ch][0], last/1000))
                 else:
-                    sys.stdout.write('{}:  Nan '.format(channels_conf[ch]))
+                    sys.stdout.write('{}:  Nan '.format(channels_conf[ch][0]))
             sys.stdout.write('\n')
 
 ###
@@ -877,21 +877,18 @@ poller.register(sock_fd, select.EPOLLIN)
 if snmp_agent:
     poller.register(stdin_fd, select.EPOLLIN)
 
-# Calculate coefficient
-factor = VREF * (R_PU + R_PD) / R_PD
-
 # Prepare header for RETLAST PDU
 retlast_hdr = struct.pack('>BBBB', PROTO_VER, PROTO_AUTHTYPE_NONE, PROTO_UNUSED, PROTO_CMD_RETLAST)
 
 # Initialize channel list
 dbg('Start initializing channel list, {} channels in configuration'.format(len(channels_conf)))
 sys.stderr.write('INFO: Initializing channels\n')
-ch_list = ChannelList(factor=factor)
+ch_list = ChannelList()
 sorted_channels = sorted(channels_conf.keys())
 for ch in sorted_channels:
     dbg('Start initializing channel {}'.format(ch))
-    if ch_list.add_ch(num=ch, label=channels_conf[ch]):
-        sys.stderr.write('ERROR: Failed to add channel number {}, label {}\n'.format(ch, channels_conf[ch]))
+    if ch_list.add_ch(ch, channels_conf[ch][0], factor=channels_conf[ch][1]):
+        sys.stderr.write('ERROR: Failed to add channel number {}, label {}\n'.format(ch, channels_conf[ch][0]))
         sys.exit(1)
 dbg('Channel list initialized, {} channels'.format(ch_list.num_of_channels()))
 
